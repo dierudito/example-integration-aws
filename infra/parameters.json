@@ -1,0 +1,15 @@
+{
+    "Parameters": {
+        "DesiredNumberOfTasks":"",
+        "ExposedPortInDockerFile":"",
+        "ListenerContainerPort":"",
+        "ContainerName":"",
+        "ContainerCpu":"",
+        "ContainerMemory":"",
+        "ContainerMemoryReservation":"",
+        "FeatureName":"",
+        "MicroServiceName":"",
+        "EcsClusterName":"",
+        "VPCID":"",
+    }
+}

@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: ECS Fargate service for API
+
+Parameters:
+  DesiredNumberOfTasks:
+    Description: Number of tasks to launch for the service
+    Type: Number
+    Default: 1
+    MinValue: 1
+  ExposedPortInDockerFile:
+    Description: Port defined in dockerfile and inside app
+    Type: Number
+    Default: 3000
+  ListenerContainerPort:
+    Description: Listening port for container
+    Type: Number
+    Default: 443
+  ContainerName:
+    Description: Container Name
+    Type: String
+    Default: container
+  ContainerCpu:
+    Description: The number of cpu units reserved for the container
+    Type: Number
+    Default: 256
+  ContainerMemory:
+    Description: The amount (in MiB) of memory to present to the container
+    Type: Number
+    Default: 512
+  ContainerMemoryReservation:
+    Description: The amount (in MiB) of memory to present to the container
+    Type: Number
+    Default: 512
+  FeatureName:
+    Description: Nome da feature
+    Type: String
+    Default: "[a-z]*"
+  MicroServiceName:
+    Description: Nome do micro servico
+    Type: String
+    Default: "[a-z]*"
+  DevToolsAccount:
+    Type: Number
+    Default: <Inserir aqui o número da conta da AWS>
+  Environment:
+    Type: String
+    Default: dev
+  EcsClusterName:
+    Description: Name of the ECS Cluster
+    Type: String
+    Default: 'ecs-cluster'
+  VPCID:
+    Description: ID da VPC
+    Type: String
+  PrivateSubnetOne:
+    Type: String
+  PrivateSubnetTwo:
+    Type: String
+  PrivateSubnetThree:
+    Type: String
+  # Insira quantas Subnet achar necessário
+  SecurityGroupECS:
+    Type: String
+  AppEnvironmentValue:
+    Type: String
+  SplunkUrl:
+    Type: String
+  SplunkIndex:
+    Type: String
+  SplunkFormat:
+    Type: String
+  SplunkTokenSecretsArn:
+    Type: String
+
+Resources:
+
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${FeatureName}-${MicroServiceName}"
+      RetentationInDays: 7
+
+  TaskDefinition:
+    Type: "AWS::ECS::TaskDefinition"
+    DependsOn: Listener
+    Properties:
+      RequiresCompatibilities:
+      - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref TaskRole
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ContainerDefinitions:
+        - Name: !Sub $(ContainerName)
+          Image: !Sub '${DevToolsAccount}.dkr.ecr.${AWS::Region}.amazonaws.com/${FeatureName}-${MicroServiceName}-${Environment}'
+          PortMappings:
+          - ContainerPort: !Ref ExposedPortInDockerFile
+          MemoryReservation: !Ref ContainerMemoryReservation
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-group: !Sub "${FeatureName}-${MicroServiceName}"
+              awslogs-stream-prefix: !Sub "${FeatureName}-${MicroServiceName}"
+          Environment:
+            - Name: ASPNETCORE_ENVIRONMENT
+              Value: !Ref AppEnvironmentValue
+            - Name: DOTNET_ENVIRONMENT
+              Value: !Ref AppEnvironmentValue
+      Family: !Sub "family-${FeatureName}-${MicroServiceName}"
+      NetworkMode: awsvpc
+    DependsOn: CloudWatchLogGroup
+  
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: !Sub AmazonECSTaskExecutionRolePolicy-${FeatureName}-${MicroServiceName}
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'ecr:GetAuthorizationToken'
+                #Inserir aqui todas as altorizações necessárias
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - 'secretsmanager:GetSecretValue'
+              Resource: '*'
+      - PolicyName: !Sub "${FeatureName}-${MicroServiceName}-cloudwatch"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: 'Allow'
+              Action:
+                - 'cloudwatch:PutMetricData'
+              Resource: '*'
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ['sts-AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: !Sub AmazonECSTaskRolePolicy-${FeatureName}-${MicroServiceName}
+        PoilicyDocument:
+          Statement:
+            - Sid: ForSecrets2KMS
+              Effect: Allow
+              Action:
+              - kms:Decript
+              - kms:Encrypt
+              - kms:GenerateDateKey
+              - kms:ReEncryptTo
+              - kms:GenerateDataKeyPairWithoutPlainText
+                #Inserir aqui todas as altorizações necessárias
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms.ViaService: secretsmanager.sa-east-1.amazonaws.com
+  
+  404MetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub "${FeatureName}-${MicroServiceName}"
+      FilterPattern: "[ip, identity, user_id, timestamp, request, status_code = 404, size, ...]"
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: !Sub "${FeatureName}-${MicroServiceName}/404s"
+        MetricName: !Sub "${FeatureName}-${MicroServiceName}/404Count"
+    DependsOn: CloudWatchLogGroup
+  
+  404Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !sub "Alarm-${FeatureName}-${MicroServiceName}-404s"
+      AlarmDescription: "Alarm description"
+      MetricName: !Sub "${FeatureName}-${MicroServiceName}/404Count"
+      Namespace: !Sub "${FeatureName}-${MicroServiceName}/404s"
+      Statistic: Sum
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - "{{resolve:ssm:/org/member/worload_local_sns_arn:1}}"
+      OKActions:
+      - "{{resolve:ssm:/org/member/worload_local_sns_arn:1}}"
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+    DependsOn: 404MetricFilter
+  
+  Service:
+    Type: "AWS::ECS::Serivce"
+    Properties:
+      PropagateTags: "SERVICE"
+      ServiceName: !Sub service-${FeatureName}-${MicroServiceName}
+      Cluster: !Ref EcsClusterName
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: !Ref DesiredNumberOfTasks
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName
+          ContainerPort: !Ref ExposedPortInDockerFile
+          TargetGroupArn: !Ref TargetGroupArn
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssingPublicIp: DISABLED
+          SecurityGroups:
+          - !Ref SecurituGroupECS
+          Subnets:
+          - !Ref PrivateSubnetOne
+          - !Ref PrivateSubnetTwo
+          - !Ref PrivateSubnetThree
+      LaunchType: FARGATE
+      SchedulingStrategy: REPLICA
+      TaskDefinition: !Ref TaskDefinition
+
+  ScalingRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2013-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - applictaion-autoscaling.amazonaws.com
+          Action: ["sts:AssumeRole"]
+      Policies:
+      - PolicyName: adjust-service-desired-count
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action: ecs:UpateService
+            Resource: !Ref Service
+
+  ScalableTarget:
+    Type: "AWS::ApplicationAutoScaling::ScalbleTarget"
+    Properties:
+      MaxCapacity: 1000
+      MinCapacity: 2
+      ResourceId: !Join
+      - "/"
+      - - service
+        - !Ref EcsClusterName
+          !GetAtt Service.Name
+      RoleARN: !GetAtt ScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+  
+  ScalingPolicy:
+    Type: "AWS::ApplictaionAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: ScaleWithCpu
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 80
+              
